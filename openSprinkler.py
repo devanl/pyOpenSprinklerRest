@@ -23,13 +23,17 @@ class FieldDescriptor(object):
 
 class FieldGetDescriptor(FieldDescriptor):
   def getAsType(self, data):
+    if type(self._tag) is list:
+      return self._type({yk: data[yk] for yk in self._tag})
     return self._type(data[self._tag])
 
 class FieldSetDescriptor(FieldDescriptor):
   def setAsType(self, data):
-    data[self._tag] = self._type(data)
+    return {self._tag: self._type(data)}
 
 def OSDateTime(ts):
+  if ts == 0:
+    return False
   return datetime.datetime.fromtimestamp(ts)
 
 def SunTime(minutes):
@@ -43,9 +47,11 @@ def IPAddress(ip):
   return '%d.%d.%d.%d' % (ip>>24, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF)
 
 def Stations(stat):
+  print('stations(%r)' % (stat,))
   retval = []
-  for i in range(8):
-    retval.append(stat & (1<<i))
+  for field in stat:
+    for i in range(8):
+      retval.append((field & (1<<i))!=0)
   return tuple(retval)
 
 def Nop(val):
@@ -55,10 +61,36 @@ def RainDelaySet(dt):
   if not dt:
     return 0
   now = datetime.datetime.now()
-  return int((dt - now).total_seconds() / 60)
+  return int((dt - now).total_seconds() / 3600)
 
 
-class Controller:
+class GetSetObj(object):
+  my_get_args = {}
+  my_set_args = {}
+
+  json_get = None
+  json_set = None
+
+  def __init__(self, p):
+    self.parent = p
+
+  def __getattr__(self, name):
+    if name in self.my_get_args.keys():
+      data = self.parent._json_get(self.json_get)
+      return self.my_get_args[name].getAsType(data)
+
+  def __setattr__(self, name, value):
+    if name in self.my_set_args.keys():
+      data = self.my_set_args[name].setAsType(value)
+      self.parent._json_get(self.json_set, data)
+    else:
+      super().__setattr__(name, value)
+
+
+class Controller(GetSetObj):
+  json_get = 'jc'
+  json_set = 'cv'
+
   '''
   - devt: Device time (epoch time). This is always the local time.
   - nbrd: Number of 8-station boards (including main controller).
@@ -85,7 +117,7 @@ class Controller:
                  'enable': FieldGetDescriptor('en', bool),
                  'rain_delay': FieldGetDescriptor('rd', bool),
                  'rain_sensor': FieldGetDescriptor('rs', bool),
-                 'rain_resume': FieldGetDescriptor('rdst', str),  # TODO: figure out what this data type is
+                 'rain_resume': FieldGetDescriptor('rdst', OSDateTime),  # TODO: figure out what this data type is
                  'location': FieldGetDescriptor('loc', str),
                  'weather_id': FieldGetDescriptor('wtkey', str),
                  'sunrise': FieldGetDescriptor('sunrise', SunTime),
@@ -110,21 +142,86 @@ class Controller:
                  'rain_delay': FieldSetDescriptor('rd', RainDelaySet),
                  'remote_extension': FieldSetDescriptor('re', int)}
 
-  def __init__(self, p):
-    self.parent = p
 
-  def __getattr__(self, name):
-    if name in self.my_get_args.keys():
-      data = self.parent._json_get('jc')
-      return self.my_get_args[name].getAsType(data)
+def OSTZ(tz):
+  tz = (tz - 48) / 4.0
+  return datetime.timedelta(hours=tz)
 
-  def __setattr__(self, name, value):
-    if name in self.my_set_args.keys():
-      data = {}
-      self.my_set_args[name].setAsType(data)
-      self.parent._json_get('cv', data)
-    else:
-      super().__setattr__(name, value)
+def IPArray(key_list, ip):
+  retval = "%s" % (ip[key_list[0]],)
+  for key in key_list[1:]:
+    retval += ".%s" % (ip[key],)
+
+  return retval
+
+IPSTATIC_KEYS = ['ip1', 'ip2', 'ip3', 'ip4']
+def IPStatic(ip):
+  return IPArray(IPSTATIC_KEYS, ip)
+
+IPGATEWAY_KEYS = ['gw1', 'gw2', 'gw3', 'gw4']
+def IPGateway(ip):
+  return IPArray(IPGATEWAY_KEYS, ip)
+
+IPNTP_KEYS = ['ntp1', 'ntp2', 'ntp3', 'ntp4']
+def IPNTP(ip):
+  return IPArray(['ntp1', 'ntp2', 'ntp3', 'ntp4'], ip)
+
+HP_KEYS = ['hp0', 'hp1']
+def HPInt(port):
+  return (port['hp1']<<8) + port['hp0']
+
+class Options(GetSetObj):
+  json_get = 'jo'
+
+  '''
+  - fwv: Firmware version (215 means Firmware 2.1.5).
+  - fwm: Firmware minor version (increments with minor revisions to the firmware)
+  - tz: Time zone (floating point time zone value * 4 + 48). For example, GMT+0:00 is 48; GMT-4:00 is 32, GMT+9:30 is 86.
+        Acceptable range is 0 to 96.
+  - ntp: Use NTP sync. Binary value.
+  - dhcp: Use DHCP. Binary value.
+  - ip{1,2,3,4}: Static IP (ignored if dhcp=1).
+  - gw{1,2,3,4}: Gateway (router) IP (ignored if dhcp=1).
+  - ntp{1,2,3,4}: NTP server IP (ignored if ntp=0).
+  - hp{0,1}: The lower and upper bytes of the HTTP port number. So http_port=(hp1<<8)+hp0.
+  - hwv: Hardware version.
+  - hwt: Hardware type. Values are as follows: 0xAC = AC power type, 0xDC = DC power type, 0x1A = Latching type.
+  - ext: Number of expansion boards (not including the main controller).
+  - sdt: Station delay time (in seconds). Acceptable range is -60 to +60 seconds, in steps of seconds, or -59 to 59 minutes.
+  - mas/mas2: Master stations 1 and 2 (a value of 0 means none). Note that this firmware supports up to 2 master stations.
+  - mton/mton2: Master 1 and 2 on delay time. Acceptable range is 0 to 60.
+  - mtof/mtof2: Master off delay time. Acceptable range is -60 to 60.
+  - urs: Use rain sensor. Binary value.
+  - rso: Rain sensor type. Binary value. 0: normally closed; 1: normally open.
+  - wl: Water level (i.e. % Watering). Acceptable range is 0 to 250.
+  - den: Operation enable bit. Binary value.
+  - ipas: Ignore password. Binary value.
+  - devid: Device ID.
+  - con/lit/dim: LCD contrast / backlight / dimming values.
+  - bst: Boost time changes the boost converter duration for DC type (in milli-seconds). Acceptable range is 0 to 1000.
+  - uwt: Weather adjustment method. 0: manual adjustment; 1: Zimmerman method. Water restriction information for
+         California is encoded in the last bit.
+  - lg: Enable logging.
+  - fpr{0,1}: flow pulse rate (scaled by 100) lower/upper byte. The actual flow pulse rate is ((fpr1<<8)+fpr0)/100.0
+  - re: Remote extension mode
+  - dexp/mexp: Detected/maximum number of zone expansion boards (-1 means cannot auto-detect).
+  '''
+  my_get_args = {'firmware_version': FieldGetDescriptor('fwv', int),
+                 'firmware_minor': FieldGetDescriptor('fwm', int),
+                 'time_zone': FieldGetDescriptor('tz', OSTZ),
+                 'use_ntp': FieldGetDescriptor('ntp', bool),
+                 'use_dhcp': FieldGetDescriptor('dhcp', bool),
+                 'ip': FieldGetDescriptor(IPSTATIC_KEYS, IPStatic),
+                 'gateway': FieldGetDescriptor(IPGATEWAY_KEYS, IPGateway),
+                 'ntp_server': FieldGetDescriptor(IPNTP_KEYS, IPNTP),
+                 'http_port': FieldGetDescriptor(HP_KEYS, HPInt),
+                 'hw_version': FieldGetDescriptor('hwv', int),
+                 'hw_type': FieldGetDescriptor('hwt', int),
+                 'expander_cnt': FieldGetDescriptor('ext', int),
+                 'station_delay': FieldGetDescriptor('sdt', int),
+                 'master_1': FieldGetDescriptor('mas', int),
+                 'master_2': FieldGetDescriptor('mas2', int),
+                }
 
 
 class OpenSprinkler:
@@ -140,6 +237,7 @@ class OpenSprinkler:
     self.password = md5(password.encode('utf-8')).hexdigest()
 
     self.controller = Controller(self)
+    self.options = Options(self)
 
   def _json_get(self, path, variables=None):
     requests_str = "http://%s/%s/?pw=%s" % (self.hostname, 
@@ -152,7 +250,7 @@ class OpenSprinkler:
 
     r = requests.get(requests_str) 
 
-    self.log.debug('GET %s status: %d', requests_str, r.status_code)
+    #self.log.debug('GET %s status: %d', requests_str, r.status_code)
     if r.status_code != 200:
       raise ValueError('Failed GET request with status %d.', r.status_code)
 
@@ -185,16 +283,21 @@ if __name__ == "__main__":
   password = sys.argv[2]
   os_device = OpenSprinkler(hostname, password, log=log)
 
+  log.info('Get "controller" fields:')
   for prop in Controller.my_get_args.keys():
     print('%s: %r' % (prop, getattr(os_device.controller, prop)))
 
-  # log.info('Setting rain delay for 1 hour')
-  # os_device.cv.rain_delay = 1
-  #
-  # print(os_device.jc)
-  #
-  # log.info('Setting rain delay to 0')
-  # os_device.cv.rain_delay = 0
-  #
-  # print(os_device.jc)
+  log.info('Get "options" fields:')
+  for prop in Options.my_get_args.keys():
+    print('%s: %r' % (prop, getattr(os_device.options, prop)))
+
+  log.info('Setting rain delay for 1 hour')
+  os_device.controller.rain_delay = datetime.datetime.now() + datetime.timedelta(hours=4)
+  log.info('Rain delay: %r', os_device.controller.rain_delay)
+  log.info('Rain resume: %r', os_device.controller.rain_resume)
+
+  log.info('Setting rain delay to 0')
+  os_device.controller.rain_delay = 0
+  log.info('Rain delay: %r', os_device.controller.rain_delay)
+  log.info('Rain resume: %r', os_device.controller.rain_resume)
 
