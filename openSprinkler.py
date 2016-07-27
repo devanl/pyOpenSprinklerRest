@@ -86,6 +86,17 @@ class GetSetObj(object):
     else:
       super().__setattr__(name, value)
 
+  def get_all(self, data=None):
+    retval = {}
+
+    if data is None:
+      data = self.parent._json_get(self.json_get)
+
+    for name in self.my_get_args.keys():
+      retval[name] = self.my_get_args[name].getAsType(data)
+
+    return retval
+
 
 class Controller(GetSetObj):
   json_get = 'jc'
@@ -262,6 +273,13 @@ class OpenSprinkler:
 
     return retval
 
+  def get_all(self):
+    retval = {}
+    data = self._json_get('ja')
+    # print('%r' % (data,))
+    retval['controller'] = self.controller.get_all(data['settings'])
+    retval['options'] = self.options.get_all(data['options'])
+    return retval
 
 if __name__ == "__main__":
   import sys
@@ -301,3 +319,4 @@ if __name__ == "__main__":
   log.info('Rain delay: %r', os_device.controller.rain_delay)
   log.info('Rain resume: %r', os_device.controller.rain_resume)
 
+  print('%r' % (os_device.get_all(),))
