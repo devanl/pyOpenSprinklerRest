@@ -71,12 +71,36 @@ class GetSetObj(object):
   json_get = None
   json_set = None
 
-  def __init__(self, p):
+  def __init__(self, p, log=None):
+    if log is None:
+      self.log = logging.getLogger(self.__class__.__name__)
+    else:
+      self.log = log.getChild(self.__class__.__name__)
     self.parent = p
+
+  def check_data(self, data):
+    def get_tag(self, name):
+      for key, tag in self.my_get_args.items():
+        if type(tag._tag) is list:
+          for val in tag._tag:
+            if val == name:
+              return tag
+        else:
+          if tag._tag == name:
+            return tag
+      return None
+
+    if len(data) != len(self.my_get_args):
+      missing = [x for x in data if get_tag(self, x) is None]
+      if len(missing):
+        self.log.error('Return data length mismatch (%d) (%d)', len(data), len(self.my_get_args))
+        for key in missing:
+          self.log.error('\tmy_get_args missing "%s"', key)
 
   def __getattr__(self, name):
     if name in self.my_get_args.keys():
       data = self.parent._json_get(self.json_get)
+      self.check_data(data)
       return self.my_get_args[name].getAsType(data)
 
   def __setattr__(self, name, value):
@@ -138,7 +162,10 @@ class Controller(GetSetObj):
                  'last_good_weather': FieldGetDescriptor('lswc', OSDateTime),
                  'station_status': FieldGetDescriptor('sbits', Stations),
                  'program_status': FieldGetDescriptor('ps', Nop), # TODO: figure out this data type
-                 'last_run': FieldGetDescriptor('lrun', Nop)} # TODO: figure out this data type
+                 'last_run': FieldGetDescriptor('lrun', Nop), # TODO: figure out this data type
+                 'current': FieldGetDescriptor('curr', int),
+                 'weather_options': FieldGetDescriptor('wto', Nop),
+                }
 
   '''
   - rsn: Reset all stations (i.e. stop all stations immediately, including those waiting to run). Binary value.
@@ -180,6 +207,10 @@ def IPNTP(ip):
 HP_KEYS = ['hp0', 'hp1']
 def HPInt(port):
   return (port['hp1']<<8) + port['hp0']
+
+FP_KEYS = ['fpr0', 'fpr1']
+def FPRate(fp):
+  return ((fp['fpr1'] << 8) + fp['fpr0']) / 100.0
 
 class Options(GetSetObj):
   json_get = 'jo'
@@ -232,6 +263,27 @@ class Options(GetSetObj):
                  'station_delay': FieldGetDescriptor('sdt', int),
                  'master_1': FieldGetDescriptor('mas', int),
                  'master_2': FieldGetDescriptor('mas2', int),
+                 'master_1_on': FieldGetDescriptor('mton', int),
+                 'master_2_on': FieldGetDescriptor('mton2', int),
+                 'master_1_off': FieldGetDescriptor('mtof', int),
+                 'master_2_off': FieldGetDescriptor('mtof2', int),
+                 'use_rain_sensor': FieldGetDescriptor('urs', bool),
+                 'rain_sensor_no': FieldGetDescriptor('rso', bool),
+                 'water_level': FieldGetDescriptor('wl', int),
+                 'operation_enable': FieldGetDescriptor('den', bool),
+                 'ignore_password': FieldGetDescriptor('ipas', bool),
+                 # 'device_id': FieldGetDescriptor('devid', str),
+                 'contrast': FieldGetDescriptor('con', int),
+                 'backlight': FieldGetDescriptor('lit', int),
+                 'dimming': FieldGetDescriptor('dim', int),
+                 'boost_time': FieldGetDescriptor('bst', int),
+                 'weather_adj': FieldGetDescriptor('uwt', int),
+                 'log_enable': FieldGetDescriptor('lg', bool),
+                 'flow_pulse_rate': FieldGetDescriptor(FP_KEYS, FPRate),
+                 'remote_extension': FieldGetDescriptor('re', bool),
+                 'detected_boards': FieldGetDescriptor('dexp', int),
+                 'max_boards': FieldGetDescriptor('mexp', int),
+                 'reset': FieldGetDescriptor('reset', bool),
                 }
 
 
@@ -317,6 +369,6 @@ if __name__ == "__main__":
   log.info('Setting rain delay to 0')
   os_device.controller.rain_delay = 0
   log.info('Rain delay: %r', os_device.controller.rain_delay)
-  log.info('Rain resume: %r', os_device.controller.rain_resume)
+  log.info('Rain resume: %r',  os_device.controller.rain_resume)
 
   print('%r' % (os_device.get_all(),))
