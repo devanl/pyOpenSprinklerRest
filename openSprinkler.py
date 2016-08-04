@@ -448,6 +448,58 @@ class Options(GetSetObj):
             super().__setattr__(name, value)
 
 
+class Station(GetSetObj):
+    def __init__(self, p, station, log=None):
+        if log is None:
+            self.log = logging.getLogger(self.__class__.__name__)
+        else:
+            self.log = log.getChild(self.__class__.__name__)
+        self.parent = p
+        self.station = station
+
+        '''
+        - snames: Array of station names.
+        - maxlen: Maximum number of characters allowed in each name.
+        - masop/masop2: Master/Master2 operation flag (LSB bit field). One byte per board. For example, 254 means the 1st station
+                on this board does not use master, and all other stations on this board use master.
+        - ignore_rain: Ignore rain flag (bit field). Defined similarly to masop. For example, 192 means the 7th and 8th stations on
+                this board ignore rain, and the other stations on this board do not.
+        - stn_dis: Station disable flag (bit field).
+        - stn_seq: Station sequential flag (bit field).
+        - stn_spe: Special station flag (bit field). If marked 1, it means this station is a special station (e.g. RF or remote).
+        '''
+        self.my_get_args = {'name': FieldGetDescriptor('snames', self.station_name),}
+
+    def station_name(self, data):
+        return data[self.station]
+
+
+class StationList(object):
+    STATION_COUNT = 8
+
+    def __init__(self, p, log=None):
+        if log is None:
+            self.log = logging.getLogger(self.__class__.__name__)
+        else:
+            self.log = log.getChild(self.__class__.__name__)
+        self.parent = p
+
+    def __getattr__(self, name):
+        if name in range(self.STATION_COUNT):
+            Station(self.parent,name)
+        else:
+            super().__getattr__(name)
+
+
+    def __setattr__(self, name, value):
+        if name in range(self.STATION_COUNT):
+            return
+        else:
+            super().__setattr__(name, value)
+
+    def get_all(self, data=None):
+        return [Station(self.parent, x).get_all(data=data) for x in range(self.STATION_COUNT)]
+
 class OpenSprinkler:
 
     def __init__(self, hostname, password, log=None):
@@ -462,6 +514,7 @@ class OpenSprinkler:
 
         self.controller = Controller(self)
         self.options = Options(self)
+        self.stations = StationList(self)
 
     def _json_get(self, path, variables=None):
         requests_str = "http://%s/%s/?pw=%s" % (self.hostname,
@@ -486,12 +539,18 @@ class OpenSprinkler:
 
         return retval
 
+    def set_password(self, val):
+        return self._json_get('sp', {'npw': val, 'cpw': val})
+
     def get_all(self):
         retval = {}
         data = self._json_get('ja')
-        # print('%r' % (data,))
+        print('Get all:')
+        # pprint.pprint(data)
+        # return None
         retval['controller'] = self.controller.get_all(data['settings'])
         retval['options'] = self.options.get_all(data['options'])
+        retval['stations'] = self.stations.get_all(data['stations'])
         return retval
 
 if __name__ == "__main__":
