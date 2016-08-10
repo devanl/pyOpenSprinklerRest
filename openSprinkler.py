@@ -468,39 +468,24 @@ class Station(GetSetObj):
         - stn_seq: Station sequential flag (bit field).
         - stn_spe: Special station flag (bit field). If marked 1, it means this station is a special station (e.g. RF or remote).
         '''
-        self.my_get_args = {'name': FieldGetDescriptor('snames', self.station_name),}
+        self.my_get_args = {'name': FieldGetDescriptor('snames', self.station_name),
+                            'maxlen': FieldGetDescriptor('maxlen', int),
+                            'masop': FieldGetDescriptor('masop', self.masop),
+                            'masop2': FieldGetDescriptor('masop2', self.masop),
+                            'ignore_rain': FieldGetDescriptor('ignore_rain', self.masop),
+                            'disbled': FieldGetDescriptor('stn_dis', self.masop),
+                            'sequential': FieldGetDescriptor('stn_seq', self.masop),
+                            'special': FieldGetDescriptor('stn_spe', self.masop)}
 
     def station_name(self, data):
         return data[self.station]
 
+    def masop(self, data):
+        return (data[int(self.station/8)] & (1 << (self.station % 8))) != 0
 
-class StationList(object):
-    STATION_COUNT = 8
-
-    def __init__(self, p, log=None):
-        if log is None:
-            self.log = logging.getLogger(self.__class__.__name__)
-        else:
-            self.log = log.getChild(self.__class__.__name__)
-        self.parent = p
-
-    def __getattr__(self, name):
-        if name in range(self.STATION_COUNT):
-            Station(self.parent,name)
-        else:
-            super().__getattr__(name)
-
-
-    def __setattr__(self, name, value):
-        if name in range(self.STATION_COUNT):
-            return
-        else:
-            super().__setattr__(name, value)
-
-    def get_all(self, data=None):
-        return [Station(self.parent, x).get_all(data=data) for x in range(self.STATION_COUNT)]
 
 class OpenSprinkler:
+    STATION_COUNT = 8
 
     def __init__(self, hostname, password, log=None):
         if log is None:
@@ -512,9 +497,15 @@ class OpenSprinkler:
         self.hostname = hostname
         self.password = md5(password.encode('utf-8')).hexdigest()
 
+        self._station_list = [Station(self, x) for x in range(self.STATION_COUNT)]
+
         self.controller = Controller(self)
         self.options = Options(self)
-        self.stations = StationList(self)
+        # self.stations = StationList(self)
+
+    @property
+    def stations(self):
+        return self._station_list
 
     def _json_get(self, path, variables=None):
         requests_str = "http://%s/%s/?pw=%s" % (self.hostname,
@@ -550,7 +541,7 @@ class OpenSprinkler:
         # return None
         retval['controller'] = self.controller.get_all(data['settings'])
         retval['options'] = self.options.get_all(data['options'])
-        retval['stations'] = self.stations.get_all(data['stations'])
+        retval['stations'] = [x.get_all(data=data['stations']) for x in self._station_list]
         return retval
 
 if __name__ == "__main__":
